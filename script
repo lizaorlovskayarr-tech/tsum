@@ -1,15 +1,9 @@
--- SWILL TSUM ESP + RAYFIELD v3.0
--- ПОЛНАЯ ИНТЕГРАЦИЯ RAYFIELD БИБЛИОТЕКИ
+-- SWILL TSUM ESP v4.0 - ПОЛНОСТЬЮ АВТОНОМНЫЙ
+-- НЕ ТРЕБУЕТ HTTP-ЗАПРОСОВ, ВСЕ ФУНКЦИИ ВСТРОЕНЫ
 
--- ЗАГРУЗКА RAYFIELD (ЕСЛИ НЕ ЗАГРУЖЕН)
-if not getgenv().Rayfield then
-    local RayfieldLib = loadstring(game:HttpGet('https://raw.githubusercontent.com/shlexware/Rayfield/main/source'))()
-    getgenv().Rayfield = RayfieldLib
-end
-
-local Rayfield = getgenv().Rayfield
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
@@ -22,41 +16,40 @@ local Settings = {
     FilterEpic = true,
     FilterLegendary = true,
     FilterMythical = true,
-    ShowPrice = true,
-    ShowChance = true,
     MaxDistance = 200,
-    UpdateInterval = 2,
-    TeleportToBest = false,
-    ColorTheme = Color3.fromRGB(153, 153, 255)
+    UpdateInterval = 1.5,
+    ShowChance = true,
+    ShowPrice = true
 }
 
 -- ========== ESP СИСТЕМА ==========
 local ESP_Objects = {}
 local ItemData = {}
+local ESP_Connections = {}
 
--- ОПРЕДЕЛЕНИЕ РЕДКОСТИ (УЛУЧШЕННОЕ)
+-- ========== GUI СИСТЕМА (ВСТРОЕННАЯ) ==========
+local GUI_Frame = nil
+local GUI_Open = false
+
+-- ОПРЕДЕЛЕНИЕ РЕДКОСТИ
 local function GetItemRarity(item)
     local name = item.Name:lower()
-    local attributes = {}
+    local color = Color3.new(1, 1, 1)
     
+    -- ПОИСК АТРИБУТОВ
     for _, child in pairs(item:GetChildren()) do
-        if child:IsA("StringValue") or child:IsA("NumberValue") then
-            attributes[child.Name:lower()] = child.Value
+        if child:IsA("StringValue") and child.Name:lower() == "rarity" then
+            local r = child.Value:lower()
+            if r:find("myth") then return "Mythical", Color3.fromRGB(255, 50, 150), 0.1 end
+            if r:find("legend") then return "Legendary", Color3.fromRGB(255, 200, 0), 0.5 end
+            if r:find("epic") then return "Epic", Color3.fromRGB(170, 0, 255), 3.0 end
+            if r:find("rare") then return "Rare", Color3.fromRGB(0, 150, 255), 10.0 end
+            if r:find("uncom") then return "Uncommon", Color3.fromRGB(0, 255, 100), 30.0 end
+            return "Common", Color3.fromRGB(200, 200, 200), 56.4
         end
     end
     
-    -- ПРИОРИТЕТ: АТРИБУТЫ
-    if attributes.rarity then
-        local r = tostring(attributes.rarity):lower()
-        if r:find("myth") then return "Mythical", Color3.fromRGB(255, 50, 150), 0.1
-        elseif r:find("legend") then return "Legendary", Color3.fromRGB(255, 200, 0), 0.5
-        elseif r:find("epic") then return "Epic", Color3.fromRGB(170, 0, 255), 3.0
-        elseif r:find("rare") then return "Rare", Color3.fromRGB(0, 150, 255), 10.0
-        elseif r:find("uncom") then return "Uncommon", Color3.fromRGB(0, 255, 100), 30.0
-        else return "Common", Color3.fromRGB(200, 200, 200), 56.4 end
-    end
-    
-    -- АНАЛИЗ ЦВЕТА
+    -- ПО ЦВЕТУ (ЕСЛИ ЕСТЬ)
     if item:IsA("BasePart") and item.BrickColor then
         local c = item.BrickColor.Color
         if c.r > 0.9 and c.g > 0.7 and c.b < 0.1 then
@@ -70,16 +63,50 @@ local function GetItemRarity(item)
         end
     end
     
+    -- ПО НАЗВАНИЮ
+    if name:find("legend") or name:find("gold") then
+        return "Legendary", Color3.fromRGB(255, 200, 0), 0.5
+    elseif name:find("epic") or name:find("purple") then
+        return "Epic", Color3.fromRGB(170, 0, 255), 3.0
+    elseif name:find("rare") or name:find("blue") then
+        return "Rare", Color3.fromRGB(0, 150, 255), 10.0
+    elseif name:find("uncommon") or name:find("green") then
+        return "Uncommon", Color3.fromRGB(0, 255, 100), 30.0
+    end
+    
     return "Common", Color3.fromRGB(200, 200, 200), 56.4
 end
 
--- СОЗДАНИЕ ESP МЕТКИ
-local function CreateESP(item, rarity, color, spawnChance)
-    if not item or not item:IsA("BasePart") then return end
+-- ПОЛУЧЕНИЕ ЦЕНЫ
+local function GetItemPrice(item)
+    for _, child in pairs(item:GetChildren()) do
+        if child:IsA("NumberValue") and child.Name:lower():find("price") then
+            return child.Value
+        end
+        if child:IsA("StringValue") and child.Name:lower():find("price") then
+            local val = tonumber(child.Value)
+            if val then return val end
+        end
+        if child:IsA("TextLabel") or child:IsA("TextButton") then
+            local text = child.Text
+            local nums = text:match("(%d+)")
+            if nums then return tonumber(nums) or 0 end
+        end
+    end
+    return 0
+end
+
+-- СОЗДАНИЕ ESP
+local function CreateESP(item, rarity, color, spawnChance, price)
+    if not item or not item:IsA("BasePart") then return nil end
+    
+    -- ПРОВЕРКА ДИСТАНЦИИ
+    local distance = (item.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
+    if distance > Settings.MaxDistance then return nil end
     
     local billboard = Instance.new("BillboardGui")
     billboard.Adornee = item
-    billboard.Size = UDim2.new(0, 300, 0, 60)
+    billboard.Size = UDim2.new(0, 320, 0, 70)
     billboard.StudsOffset = Vector3.new(0, 2.5, 0)
     billboard.AlwaysOnTop = true
     billboard.MaxDistance = Settings.MaxDistance
@@ -87,8 +114,8 @@ local function CreateESP(item, rarity, color, spawnChance)
 
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(1, 0, 1, 0)
-    frame.BackgroundTransparency = 0.3
-    frame.BackgroundColor3 = Color3.fromRGB(10, 10, 25)
+    frame.BackgroundTransparency = 0.2
+    frame.BackgroundColor3 = Color3.fromRGB(10, 10, 30)
     frame.BorderSizePixel = 2
     frame.BorderColor3 = color
     frame.Parent = billboard
@@ -109,38 +136,46 @@ local function CreateESP(item, rarity, color, spawnChance)
     nameLabel.TextXAlignment = Enum.TextXAlignment.Left
     nameLabel.Parent = frame
 
-    -- ШАНС (ЕСЛИ ВКЛЮЧЕН)
+    -- ВТОРАЯ СТРОКА (ШАНС ИЛИ ЦЕНА)
+    local subText = ""
     if Settings.ShowChance then
-        local chanceLabel = Instance.new("TextLabel")
-        chanceLabel.Size = UDim2.new(1, -10, 0.4, -5)
-        chanceLabel.Position = UDim2.new(0, 5, 0.5, 2)
-        chanceLabel.BackgroundTransparency = 1
-        chanceLabel.Text = "Шанс: " .. string.format("%.2f", spawnChance) .. "%"
-        chanceLabel.TextColor3 = color
-        chanceLabel.TextScaled = true
-        chanceLabel.Font = Enum.Font.Gotham
-        chanceLabel.TextXAlignment = Enum.TextXAlignment.Left
-        chanceLabel.Parent = frame
+        subText = subText .. "Шанс: " .. string.format("%.2f", spawnChance) .. "%"
     end
+    if Settings.ShowPrice and price > 0 then
+        if subText ~= "" then subText = subText .. " | " end
+        subText = subText .. "Цена: " .. price .. "$"
+    end
+    if subText == "" then subText = "Редкость: " .. rarity end
+
+    local infoLabel = Instance.new("TextLabel")
+    infoLabel.Size = UDim2.new(1, -10, 0.4, -5)
+    infoLabel.Position = UDim2.new(0, 5, 0.5, 2)
+    infoLabel.BackgroundTransparency = 1
+    infoLabel.Text = subText
+    infoLabel.TextColor3 = color
+    infoLabel.TextScaled = true
+    infoLabel.Font = Enum.Font.Gotham
+    infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+    infoLabel.Parent = frame
 
     return billboard
 end
 
--- СКАНИРОВАНИЕ МИРА
+-- СКАНИРОВАНИЕ
 local function ScanWorld()
     -- ОЧИСТКА
     for _, obj in pairs(ESP_Objects) do
-        if obj and obj.Parent then obj:Destroy() end
+        pcall(function() if obj and obj.Parent then obj:Destroy() end end)
     end
     ESP_Objects = {}
     ItemData = {}
     
     if not Settings.Enabled then return end
     
-    local container = workspace:FindFirstChild("Items") or workspace
+    local container = workspace:FindFirstChild("Items") or workspace:FindFirstChild("Clothing") or workspace
     
     for _, v in pairs(container:GetDescendants()) do
-        if v:IsA("BasePart") and v.Size.Magnitude > 1 then
+        if v:IsA("BasePart") and v.Size.Magnitude > 1 and v.Size.Magnitude < 50 then
             local rarity, color, chance = GetItemRarity(v)
             
             -- ФИЛЬТРАЦИЯ
@@ -153,209 +188,266 @@ local function ScanWorld()
             if rarity == "Mythical" and Settings.FilterMythical then filterPass = true end
             
             if filterPass then
-                local esp = CreateESP(v, rarity, color, chance)
-                if esp then table.insert(ESP_Objects, esp) end
-                table.insert(ItemData, {Name = v.Name, Rarity = rarity, Chance = chance, Position = v.Position})
+                local price = GetItemPrice(v)
+                local esp = CreateESP(v, rarity, color, chance, price)
+                if esp then 
+                    table.insert(ESP_Objects, esp)
+                    table.insert(ItemData, {
+                        Name = v.Name,
+                        Rarity = rarity,
+                        Chance = chance,
+                        Price = price,
+                        Position = v.Position,
+                        Object = v
+                    })
+                end
             end
+        end
+    end
+    
+    -- ОБНОВЛЕНИЕ СТАТИСТИКИ В GUI
+    if GUI_Frame then
+        local stats = GUI_Frame:FindFirstChild("StatsLabel")
+        if stats then
+            stats.Text = "Объектов: " .. #ESP_Objects .. " | Найдено: " .. #ItemData
         end
     end
 end
 
--- ========== СОЗДАНИЕ GUI ЧЕРЕЗ RAYFIELD ==========
-local function CreateRayfieldGUI()
-    local Window = Rayfield:CreateWindow({
-        Name = "TSUM PRO ESP",
-        LoadingTitle = "SWILL ENGINE",
-        LoadingSubtitle = "by Swill Way",
-        ConfigurationSaving = {
-            Enabled = true,
-            FolderName = "SwillTsumESP",
-            FileName = "Settings"
-        },
-        Discord = {
-            Enabled = false
-        },
-        KeySystem = false,
-        RayfieldVersion = "1.0"
-    })
-
-    -- ОСНОВНАЯ ВКЛАДКА
-    local MainTab = Window:CreateTab("Основное", 4483362458)
-    local MainSection = MainTab:CreateSection("ESP Управление")
-
-    MainTab:CreateToggle({
-        Name = "Включить ESP",
-        CurrentValue = Settings.Enabled,
-        Flag = "ESPEnabled",
-        Callback = function(Value)
-            Settings.Enabled = Value
-            if Value then ScanWorld() else 
-                for _, obj in pairs(ESP_Objects) do
-                    if obj and obj.Parent then obj:Destroy() end
-                end
-                ESP_Objects = {}
+-- ========== СОЗДАНИЕ GUI ==========
+local function CreateGUI()
+    if GUI_Frame then
+        GUI_Frame.Parent = nil
+        GUI_Frame = nil
+    end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui")
+    
+    -- ОСНОВНАЯ ПАНЕЛЬ
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 350, 0, 500)
+    mainFrame.Position = UDim2.new(0.01, 10, 0.1, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 40)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 2
+    mainFrame.BorderColor3 = Color3.fromRGB(153, 153, 255)
+    mainFrame.ClipsDescendants = true
+    mainFrame.Parent = screenGui
+    mainFrame.Active = true
+    mainFrame.Draggable = true
+    
+    local cornerMain = Instance.new("UICorner")
+    cornerMain.CornerRadius = UDim.new(0, 12)
+    cornerMain.Parent = mainFrame
+    
+    -- ЗАГОЛОВОК
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 0, 40)
+    title.Position = UDim2.new(0, 10, 0, 10)
+    title.BackgroundTransparency = 1
+    title.Text = "⚡ TSUM ESP [SWILL]"
+    title.TextColor3 = Color3.fromRGB(153, 153, 255)
+    title.TextScaled = true
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = mainFrame
+    
+    -- СТАТИСТИКА
+    local statsLabel = Instance.new("TextLabel")
+    statsLabel.Name = "StatsLabel"
+    statsLabel.Size = UDim2.new(1, -20, 0, 25)
+    statsLabel.Position = UDim2.new(0, 10, 0, 55)
+    statsLabel.BackgroundTransparency = 1
+    statsLabel.Text = "Объектов: 0 | Найдено: 0"
+    statsLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+    statsLabel.TextScaled = true
+    statsLabel.Font = Enum.Font.Gotham
+    statsLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statsLabel.Parent = mainFrame
+    
+    -- СКРОЛЛИНГ ПАНЕЛЬ
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Size = UDim2.new(1, -20, 0.6, 0)
+    scrollFrame.Position = UDim2.new(0, 10, 0, 90)
+    scrollFrame.BackgroundTransparency = 0.3
+    scrollFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 20)
+    scrollFrame.BorderSizePixel = 1
+    scrollFrame.BorderColor3 = Color3.fromRGB(153, 153, 255)
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 400)
+    scrollFrame.ScrollBarThickness = 6
+    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(153, 153, 255)
+    scrollFrame.Parent = mainFrame
+    
+    local cornerScroll = Instance.new("UICorner")
+    cornerScroll.CornerRadius = UDim.new(0, 8)
+    cornerScroll.Parent = scrollFrame
+    
+    -- КНОПКИ ФИЛЬТРОВ
+    local filterData = {
+        {Name = "Common", Icon = "⬜", Color = Color3.fromRGB(200, 200, 200)},
+        {Name = "Uncommon", Icon = "🟩", Color = Color3.fromRGB(0, 255, 100)},
+        {Name = "Rare", Icon = "🟦", Color = Color3.fromRGB(0, 150, 255)},
+        {Name = "Epic", Icon = "🟪", Color = Color3.fromRGB(170, 0, 255)},
+        {Name = "Legendary", Icon = "🟨", Color = Color3.fromRGB(255, 200, 0)},
+        {Name = "Mythical", Icon = "🟥", Color = Color3.fromRGB(255, 50, 150)}
+    }
+    
+    local yOffset = 10
+    for _, filter in ipairs(filterData) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0.9, 0, 0, 35)
+        btn.Position = UDim2.new(0.05, 0, 0, yOffset)
+        btn.BackgroundColor3 = Color3.fromRGB(20, 20, 50)
+        btn.BorderSizePixel = 2
+        btn.BorderColor3 = Settings["Filter" .. filter.Name] and filter.Color or Color3.fromRGB(50, 50, 50)
+        btn.Text = filter.Icon .. " " .. filter.Name .. (Settings["Filter" .. filter.Name] and " ✅" or " ❌")
+        btn.TextColor3 = Settings["Filter" .. filter.Name] and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(100, 100, 100)
+        btn.TextScaled = true
+        btn.Font = Enum.Font.GothamBold
+        btn.Parent = scrollFrame
+        
+        local cornerBtn = Instance.new("UICorner")
+        cornerBtn.CornerRadius = UDim.new(0, 6)
+        cornerBtn.Parent = btn
+        
+        btn.MouseButton1Click:Connect(function()
+            local key = "Filter" .. filter.Name
+            Settings[key] = not Settings[key]
+            btn.Text = filter.Icon .. " " .. filter.Name .. (Settings[key] and " ✅" or " ❌")
+            btn.TextColor3 = Settings[key] and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(100, 100, 100)
+            btn.BorderColor3 = Settings[key] and filter.Color or Color3.fromRGB(50, 50, 50)
+            ScanWorld()
+        end)
+        
+        yOffset = yOffset + 42
+    end
+    
+    -- НИЖНЯЯ ПАНЕЛЬ
+    local bottomPanel = Instance.new("Frame")
+    bottomPanel.Size = UDim2.new(1, -20, 0.12, 0)
+    bottomPanel.Position = UDim2.new(0, 10, 0.78, 0)
+    bottomPanel.BackgroundTransparency = 1
+    bottomPanel.Parent = mainFrame
+    
+    -- КНОПКА РЕСКАНА
+    local refreshBtn = Instance.new("TextButton")
+    refreshBtn.Size = UDim2.new(0.28, 0, 1, -5)
+    refreshBtn.Position = UDim2.new(0, 0, 0, 0)
+    refreshBtn.BackgroundColor3 = Color3.fromRGB(153, 153, 255)
+    refreshBtn.BorderSizePixel = 0
+    refreshBtn.Text = "🔄 Рескан"
+    refreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    refreshBtn.TextScaled = true
+    refreshBtn.Font = Enum.Font.GothamBold
+    refreshBtn.Parent = bottomPanel
+    
+    local cornerRef = Instance.new("UICorner")
+    cornerRef.CornerRadius = UDim.new(0, 6)
+    cornerRef.Parent = refreshBtn
+    
+    refreshBtn.MouseButton1Click:Connect(function()
+        ScanWorld()
+    end)
+    
+    -- КНОПКА ТЕЛЕПОРТА
+    local tpBtn = Instance.new("TextButton")
+    tpBtn.Size = UDim2.new(0.28, 0, 1, -5)
+    tpBtn.Position = UDim2.new(0.35, 5, 0, 0)
+    tpBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 150)
+    tpBtn.BorderSizePixel = 0
+    tpBtn.Text = "🚀 ТП"
+    tpBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    tpBtn.TextScaled = true
+    tpBtn.Font = Enum.Font.GothamBold
+    tpBtn.Parent = bottomPanel
+    
+    local cornerTp = Instance.new("UICorner")
+    cornerTp.CornerRadius = UDim.new(0, 6)
+    cornerTp.Parent = tpBtn
+    
+    tpBtn.MouseButton1Click:Connect(function()
+        if #ItemData == 0 then return end
+        local best = ItemData[1]
+        for _, data in pairs(ItemData) do
+            if data.Rarity == "Mythical" or data.Rarity == "Legendary" then
+                best = data
+                break
             end
         end
-    })
-
-    MainTab:CreateSlider({
-        Name = "Дистанция ESP",
-        Min = 50,
-        Max = 500,
-        Increments = 10,
-        CurrentValue = Settings.MaxDistance,
-        Flag = "ESPDistance",
-        Callback = function(Value)
-            Settings.MaxDistance = Value
-            ScanWorld()
-        end
-    })
-
-    MainTab:CreateSlider({
-        Name = "Интервал обновления (сек)",
-        Min = 0.5,
-        Max = 10,
-        Increments = 0.5,
-        CurrentValue = Settings.UpdateInterval,
-        Flag = "UpdateInterval",
-        Callback = function(Value)
-            Settings.UpdateInterval = Value
-        end
-    })
-
-    -- ВКЛАДКА ФИЛЬТРОВ
-    local FilterTab = Window:CreateTab("Фильтры", 4483362458)
-    local FilterSection = FilterTab:CreateSection("Редкость")
-
-    FilterTab:CreateToggle({
-        Name = "⬜ Common",
-        CurrentValue = Settings.FilterCommon,
-        Flag = "FilterCommon",
-        Callback = function(Value)
-            Settings.FilterCommon = Value
-            ScanWorld()
-        end
-    })
-
-    FilterTab:CreateToggle({
-        Name = "🟩 Uncommon",
-        CurrentValue = Settings.FilterUncommon,
-        Flag = "FilterUncommon",
-        Callback = function(Value)
-            Settings.FilterUncommon = Value
-            ScanWorld()
-        end
-    })
-
-    FilterTab:CreateToggle({
-        Name = "🟦 Rare",
-        CurrentValue = Settings.FilterRare,
-        Flag = "FilterRare",
-        Callback = function(Value)
-            Settings.FilterRare = Value
-            ScanWorld()
-        end
-    })
-
-    FilterTab:CreateToggle({
-        Name = "🟪 Epic",
-        CurrentValue = Settings.FilterEpic,
-        Flag = "FilterEpic",
-        Callback = function(Value)
-            Settings.FilterEpic = Value
-            ScanWorld()
-        end
-    })
-
-    FilterTab:CreateToggle({
-        Name = "🟨 Legendary",
-        CurrentValue = Settings.FilterLegendary,
-        Flag = "FilterLegendary",
-        Callback = function(Value)
-            Settings.FilterLegendary = Value
-            ScanWorld()
-        end
-    })
-
-    FilterTab:CreateToggle({
-        Name = "🟥 Mythical",
-        CurrentValue = Settings.FilterMythical,
-        Flag = "FilterMythical",
-        Callback = function(Value)
-            Settings.FilterMythical = Value
-            ScanWorld()
-        end
-    })
-
-    -- ВКЛАДКА ДОПОЛНИТЕЛЬНО
-    local ExtraTab = Window:CreateTab("Дополнительно", 4483362458)
-    local ExtraSection = ExtraTab:CreateSection("Настройки")
-
-    ExtraTab:CreateToggle({
-        Name = "Показывать шанс спавна",
-        CurrentValue = Settings.ShowChance,
-        Flag = "ShowChance",
-        Callback = function(Value)
-            Settings.ShowChance = Value
-            ScanWorld()
-        end
-    })
-
-    ExtraTab:CreateButton({
-        Name = "🔍 Принудительный рескан",
-        Callback = function()
-            ScanWorld()
-            Rayfield:Notify({
-                Title = "SWILL ESP",
-                Content = "Рескан выполнен! Найдено: " .. #ESP_Objects .. " объектов",
-                Duration = 2
-            })
-        end
-    })
-
-    ExtraTab:CreateButton({
-        Name = "🚀 Телепорт к лучшей вещи",
-        Callback = function()
-            if #ItemData == 0 then
-                Rayfield:Notify({
-                    Title = "Ошибка",
-                    Content = "Нет найденных объектов",
-                    Duration = 2
-                })
-                return
-            end
-            
-            local best = ItemData[1]
-            for _, data in pairs(ItemData) do
-                if data.Rarity == "Mythical" or data.Rarity == "Legendary" then
-                    best = data
-                    break
-                end
-            end
-            
+        pcall(function()
             LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(best.Position + Vector3.new(0, 3, 0))
-            Rayfield:Notify({
-                Title = "Телепорт",
-                Content = "Телепортирован к: " .. best.Name,
-                Duration = 2
-            })
+        end)
+    end)
+    
+    -- КНОПКА ЗАКРЫТИЯ
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0.28, 0, 1, -5)
+    closeBtn.Position = UDim2.new(0.72, 5, 0, 0)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Text = "⛔ Закрыть"
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.TextScaled = true
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.Parent = bottomPanel
+    
+    local cornerClose = Instance.new("UICorner")
+    cornerClose.CornerRadius = UDim.new(0, 6)
+    cornerClose.Parent = closeBtn
+    
+    closeBtn.MouseButton1Click:Connect(function()
+        GUI_Frame = nil
+        screenGui:Destroy()
+        for _, obj in pairs(ESP_Objects) do
+            pcall(function() if obj and obj.Parent then obj:Destroy() end end)
         end
-    })
-
-    ExtraTab:CreateButton({
-        Name = "⛔ Закрыть GUI",
-        Callback = function()
-            Rayfield:Destroy()
-            for _, obj in pairs(ESP_Objects) do
-                if obj and obj.Parent then obj:Destroy() end
-            end
-        end
-    })
-
-    return Window
+        Settings.Enabled = false
+    end)
+    
+    GUI_Frame = screenGui
+    return screenGui
 end
 
--- ========== ЦИКЛ АВТООБНОВЛЕНИЯ ==========
+-- ========== ГОРЯЧИЕ КЛАВИШИ ==========
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    -- INSERT - ОТКРЫТЬ/ЗАКРЫТЬ GUI
+    if input.KeyCode == Enum.KeyCode.Insert then
+        if GUI_Frame and GUI_Frame.Parent then
+            GUI_Frame.Parent = nil
+            GUI_Open = false
+        else
+            CreateGUI()
+            ScanWorld()
+            GUI_Open = true
+        end
+    end
+    
+    -- F5 - РЕСКАН
+    if input.KeyCode == Enum.KeyCode.F5 then
+        if Settings.Enabled then
+            ScanWorld()
+        end
+    end
+    
+    -- END - ВКЛ/ВЫКЛ ESP
+    if input.KeyCode == Enum.KeyCode.End then
+        Settings.Enabled = not Settings.Enabled
+        if Settings.Enabled then
+            ScanWorld()
+        else
+            for _, obj in pairs(ESP_Objects) do
+                pcall(function() if obj and obj.Parent then obj:Destroy() end end)
+            end
+            ESP_Objects = {}
+        end
+    end
+end)
+
+-- ========== АВТООБНОВЛЕНИЕ ==========
 local lastScan = 0
 RunService.Heartbeat:Connect(function()
     if Settings.Enabled and tick() - lastScan > Settings.UpdateInterval then
@@ -364,9 +456,38 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- ========== ЗАПУСК ==========
-print("[SWILL] ЗАГРУЗКА RAYFIELD GUI ДЛЯ TSUM...")
-CreateRayfieldGUI()
+-- ========== ПЕРВЫЙ ЗАПУСК ==========
+print("[SWILL] TSUM ESP АКТИВИРОВАН")
+print("[SWILL] УПРАВЛЕНИЕ:")
+print("  INSERT - ОТКРЫТЬ/ЗАКРЫТЬ GUI")
+print("  F5 - ПРИНУДИТЕЛЬНЫЙ РЕСКАН")
+print("  END - ВКЛ/ВЫКЛ ESP")
+
+-- ЗАПУСК GUI И СКАНИРОВАНИЯ
+CreateGUI()
 ScanWorld()
 
-print("[SWILL] RAYFIELD ИНТЕГРИРОВАН. НАЖМИТЕ INSERT ДЛЯ ОТКРЫТИЯ GUI.")
+-- ПРИВЕТСТВИЕ
+local function ShowStartupMessage()
+    local msg = Instance.new("TextLabel")
+    msg.Size = UDim2.new(0, 400, 0, 50)
+    msg.Position = UDim2.new(0.5, -200, 0.5, -25)
+    msg.BackgroundColor3 = Color3.fromRGB(10, 10, 30)
+    msg.BackgroundTransparency = 0.3
+    msg.BorderSizePixel = 2
+    msg.BorderColor3 = Color3.fromRGB(153, 153, 255)
+    msg.Text = "SWILL TSUM ESP ЗАГРУЖЕН! ИСПОЛЬЗУЙ INSERT"
+    msg.TextColor3 = Color3.fromRGB(153, 153, 255)
+    msg.TextScaled = true
+    msg.Font = Enum.Font.GothamBold
+    msg.Parent = LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui")
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = msg
+    
+    wait(3)
+    msg:Destroy()
+end
+
+pcall(ShowStartupMessage)
